@@ -3,6 +3,13 @@ High Throughput Screen (HTS) Analysis
 Zhenning Tan
 September 30, 2016
 
+``` r
+#install and load necessary packages
+library(ggplot2)
+library(tidyr)
+library(gridExtra)
+```
+
 ### 1. Summary
 
 This document is an analysis of HTS output data from a 10k library. Due to confidentiality., any library or compounds identification are removed. The goal of this analysis is to show the work flow of HTS analysis. Any adivce is welcome. **Note:** to eliminate the effect of systematic error during sample dispensing, *each data point is divided by the average of the same well data points in 32 plates.*
@@ -15,11 +22,57 @@ This section is removed due to confidentiality.
 
 #### Read all plates into a list
 
+``` r
+# remember to set work directory 
+
+readAll <- function(number, prefix){
+  output <- list()
+  for (i in c(1:number)){
+    input <- paste0(prefix,"_p",i)
+    data <- read.csv(input, header = FALSE)
+    colnames(data) <- seq(1,24)   #change column names to 1-24
+    rownames(data) <- LETTERS[1:16] #change row names to A to P
+    output[[i]] <- data
+  }
+  return(output)
+}
+
+proplates <- readAll(32, "20160929_promoter")
+inhplates <- readAll(32, "20160930_inhibitor")
+np <- length(proplates)
+ni <- length(inhplates)
+```
+
 There are 32 plates in promoter HTS. There are 32 plates in inhibitor HTS.
 
 ### 3.1 Promoter HTS
 
 #### Check standard curve for each plate
+
+``` r
+#make standard curve table
+standardTable <- function(plates, type){
+  standard.table <- data.frame(matrix(NA, nrow = 10, ncol = 32))
+  for(i in c(1:32)){
+    data <- sapply(1:8, function(x, y) round(mean(y[(x*2-1): (x*2)])), 
+                   y = plates[[i]][,1]) 
+    t <- type == "promoter" 
+    standard.table[,i] <- c(i, t, data)
+    }
+  # transpose the data frame
+  standard.table <- data.frame(t(standard.table))
+  
+  # add column and row names to the tranposed data frame
+  rownames(standard.table) <- c(1:32)
+  colnames(standard.table) <- c("plate", "type", "150", "200", "300",
+                          "400","500", "600", "800", "0")
+  # use 0 to represent oligo control wells
+  return(standard.table)
+}
+
+pro.standards <- standardTable(proplates, "promoter")
+pro.standards
+```
 
     ##    plate type    150    200    300    400    500    600    800       0
     ## 1      1    1  82840 150698 318392 488096 587650 630330 709242 1289867
@@ -55,17 +108,91 @@ There are 32 plates in promoter HTS. There are 32 plates in inhibitor HTS.
     ## 31    31    1  82554 163120 355980 492696 594020 689292 748658 1305933
     ## 32    32    1  87940 151448 343559 515990 591714 698494 751038 1287266
 
+``` r
+pro.standards <- gather(pro.standards, NaCl, FL, 3:10, convert = TRUE)
+#head(pro.standards)
+```
+
 Each column represents a NaCl concentration in mM. The "0" column represents the condition with no NaCl or CP - oligo only wells.
 
 #### Visualize salt conditions in standard curve
 
+``` r
+ggplot(data = pro.standards, aes(x= plate, y=FL))+
+  geom_point()+
+  facet_grid(.~ NaCl)+
+  ggtitle("Standard curve check for all plates")
+```
+
 ![](Figs/unnamed-chunk-4-1.png)
 
-Although there are variations in 150mM and 800mM standards, there is no systematic error. These standard curves make sure that each plate reading is normal. These numbers are not used to normalize data. The "0" panel represents oligo only wells. \#\#\#\# Visualize standard curves ![](Figs/unnamed-chunk-5-1.png)
+Although there are variations in 150mM and 800mM standards, there is no systematic error. These standard curves make sure that each plate reading is normal. These numbers are not used to normalize data. The "0" panel represents oligo only wells. \#\#\#\# Visualize standard curves
+
+``` r
+ggplot(data = subset(pro.standards, NaCl != 0), aes(x = NaCl, y = FL))+
+  geom_point()+
+  geom_line()+
+  facet_wrap(~plate)+
+  ggtitle("Standard curves for all plates")+
+  xlab( "NaCl, mM")
+```
+
+![](Figs/unnamed-chunk-5-1.png)
 
 Standard curves look consistent in all plates.
 
 #### Calculate average (ave), standard deviation (sd), coefficient of variation (cv), z prime for each plate
+
+``` r
+# calculate plate statistics by selecting columns and type promoter/inhibitor 
+stats <- function(plate, type, row = 1:16){ 
+  aveAssay <- round(mean(plate[row,2]))
+  sdAssay <- round(sd(plate[row,2]))
+  cvAssay <- round(sdAssay/aveAssay, digits = 4)
+  
+  ave150 <- round(mean(plate[row,23]))
+  sd150 <- round(sd(plate[row,23]))
+  cv150 <- round(sd150/ave150, digits =4)
+  
+  ave800 <- round(mean(plate[row,24]))
+  sd800 <- round(sd(plate[row,24]))
+  cv800 <- round(sd800/ave800, digits =4)
+  
+  if(type == "promoter"){
+    z <- round(1- 3*(sdAssay + sd150)/(aveAssay - ave150), digits = 4)
+  }  else{
+    z <- round(1- 3*(sdAssay + sd800)/(ave800 - aveAssay), digits = 4)
+  }
+  t <- type =="promoter"
+  result <- c(t, aveAssay, ave150, ave800, 
+              sdAssay, sd150, sd800, 
+              cvAssay, cv150, cv800, z)
+  return(result)
+}
+
+# calculate the statistics for each plate and store them in a table
+statTable <- function(plates, type, row = 1:16){
+  stat.table <- data.frame(matrix(NA, nrow = 12, ncol = 32))
+  for(i in c(1:32)){
+    data <- stats(plates[[i]], type, row)
+    stat.table[,i] <- c(i, data)
+    }
+  # transpose the data frame
+  stat.table <- data.frame(t(stat.table))
+  
+  # add column and row names to the tranposed data frame
+  #rownames(stat.table) <- c(1:32)
+  colnames(stat.table) <- c("plate", "type", "aveAssay", "ave150", "ave800",
+                          "sdAssay","sd150", "sd800", 
+                          "cvAssay", "cv150", "cv800", "z")
+  stat.table["normAssay"] <- round((stat.table$aveAssay - stat.table$ave150)/
+                              (stat.table$ave800 - stat.table$ave150), digits =4)
+  return(stat.table)
+}
+
+pro.controls1 <- statTable(proplates, "promoter", row = 1:16)
+pro.controls1
+```
 
     ##     plate type aveAssay ave150  ave800 sdAssay sd150 sd800 cvAssay  cv150  cv800      z normAssay
     ## X1      1    1   611027  72649  839527   58571  6518 64668  0.0959 0.0897 0.0770 0.6373    0.7020
@@ -101,15 +228,65 @@ Standard curves look consistent in all plates.
     ## X31    31    1   675398  84212  861469   68798 12204 61340  0.1019 0.1449 0.0712 0.5890    0.7606
     ## X32    32    1   683382  83467  871506   79454  9157 70388  0.1163 0.1097 0.0808 0.5569    0.7613
 
+``` r
+#head(pro.controls1)
+#dim(pro.controls1)
+```
+
 The Assay condition is 570 mM NaCl in promoter HTS assay, and 320 mM NaCl in inhibitor HTS assay. Each plate has one column for assay condition, 150 mM NaCl (positive control), and 800 mM NaCl (negative control), respectively. Normalized assay signal (normAssay) is based on (aveAssay - ave150)/(ave800 - ave150). "Type" column represents the type of HTS - 1 standars for promoter HTS, 0 standards for inhibitor HTS.
 
 #### Make a plot to check the average statistics for each plate
+
+``` r
+# create a function to prepare a dataframe with 3 conditionps, ave and sd
+controlPlot <- function(plates, row = 1:16){
+  controls <- statTable(plates, "promoter", row)
+  controls
+  # split into 3 conditions
+  controls <- gather(controls, condition, ave, 3:5)
+  
+  # create a new varialbe "sd" to record sd for each condition
+  controls$sd <- NA 
+  controls[controls$condition == "aveAssay", ]$sd <- 
+    controls[controls$condition == "aveAssay", ]$sdAssay 
+  controls[controls$condition == "ave150", ]$sd <- 
+    controls[controls$condition == "ave150", ]$sd150 
+  controls[controls$condition == "ave800", ]$sd <- 
+    controls[controls$condition == "ave800", ]$sd800
+  
+  #make a plot
+  ggplot(data = controls, aes(x= plate, y= ave, col = condition), pch = 19)+
+    geom_errorbar(aes(ymin= ave - sd, ymax= ave + sd), width=.2) +
+    geom_point(size = 3)+
+    ggtitle("HTS: Average control conditions")
+}
+
+controlPlot(proplates, row = 1:16)
+```
 
 ![](Figs/unnamed-chunk-7-1.png)
 
 Plates 3-6, prepared in one batch, have relatively low normalized assay condition (~50% vs 75% for other plates). This is caused by abnormally high 800mM NaCl control.In the following data analysis, use the average of all plates in 800 mM NaCl to normalize the data in plate 3-6.
 
 #### Visualize z prime and normalized activity
+
+``` r
+normZplot <- function(controls){
+  p1 <- ggplot(data = controls, aes(x= plate, y= z))+
+    geom_point(size = 3)+ 
+    ylim(c(0,1))+
+    ggtitle("z prime")
+
+  p2 <- ggplot(data = controls, aes(x= plate, y= normAssay))+
+    geom_point(size = 3)+ 
+    ylim(c(0,1))+
+    ggtitle("Normalized assay activity")
+  
+  grid.arrange(p1,p2, ncol = 2)
+}
+
+normZplot(pro.controls1)
+```
 
 ![](Figs/unnamed-chunk-8-1.png)
 
@@ -118,7 +295,19 @@ Plates 3-6, prepared in one batch, have relatively low normalized assay conditio
 1.  remove data in row 1 to 3 in column 2. These wells have big systematic error
 2.  use average 800mM NaCl control to normalize assay condition in plates 3-6
 
-<!-- -->
+``` r
+#remove well A2, B2 and C2 in assay condition in control table
+pro.controls2 <- statTable(proplates, "promoter", row = c(4:16))
+
+#renormalize plates 3-6
+pro.controls2$ave800c <- pro.controls2$ave800
+pro.controls2[3:6,]$ave800c <- round(mean(pro.controls2[-c(3:6),]$ave800))
+
+pro.controls2$normAssay <- round((pro.controls2$aveAssay - pro.controls2$ave150)/
+                        (pro.controls2$ave800c - pro.controls2$ave150),digits =4)
+
+pro.controls2
+```
 
     ##     plate type aveAssay ave150  ave800 sdAssay sd150 sd800 cvAssay  cv150  cv800      z normAssay ave800c
     ## X1      1    1   587895  70753  817613   30282  5675 48404  0.0515 0.0802 0.0592 0.7914    0.6924  817613
@@ -154,21 +343,145 @@ Plates 3-6, prepared in one batch, have relatively low normalized assay conditio
     ## X31    31    1   647159  82129  839098   13360 11876 42138  0.0206 0.1446 0.0502 0.8660    0.7464  839098
     ## X32    32    1   649227  82525  844483   18637  9649 43468  0.0287 0.1169 0.0515 0.8503    0.7437  844483
 
+``` r
+names(pro.controls2)
+```
+
     ##  [1] "plate"     "type"      "aveAssay"  "ave150"    "ave800"    "sdAssay"   "sd150"     "sd800"     "cvAssay"   "cv150"     "cv800"     "z"         "normAssay" "ave800c"
 
+``` r
+#dim(pro.controls2)
+```
+
 #### Remake plot to examine z prime and normalized activity
+
+``` r
+normZplot(pro.controls2)
+```
 
 ![](Figs/unnamed-chunk-10-1.png)
 
 #### Scale data based on ave150 and ave800c
 
+``` r
+scaleData <- function(plates, controls, low, high){ 
+  splates <- list()
+  for(i in c(1:32)){  
+  plate <- plates[[i]]    
+  ls <- controls[i, low]
+  hs <- controls[i, high]
+  scaled <- sapply(plate, function(x) round((x-ls)/(hs - ls), digits = 4))
+  scaled <- data.frame(scaled[,3:22])
+  names(scaled) <- c(3:22)
+  scaled$plate <- i
+  scaled$row <- LETTERS[1:16]
+  splates[[i]] <- scaled 
+  }
+  return(splates)
+}
+
+proscaled <- scaleData(proplates, pro.controls2, "ave150", "ave800c") 
+
+#proscaled[[1]]
+```
+
 #### Divide each assay well data point by the average of the same well in all plates
 
+``` r
+normPlate <- function(plates){ 
+  # get the average for all plates 
+  output <- list()
+  n <- length(plates)
+  total <- plates[[1]][1:20]
+  for(i in 2:n){
+    total <- total + plates[[i]][1:20]
+  }
+  ave <- (total/n)
+  
+  # divide each plate by average
+  for(i in c(1:n)){
+    norm <- round(plates[[i]][1:20]/ave, digits = 4)
+    norm$plate <- i
+    norm$row <- LETTERS[1:16]
+    output[[i]] <- norm
+  } 
+  return(output)
+}
+
+proscaled <- normPlate(proscaled)
+```
+
 #### Combine all scaled data into one data frame
+
+``` r
+combinePlates <- function(plates, type){
+  df <- plates[[1]]
+
+  for(i in c(2:32)){
+  df <- rbind(df, plates[[i]])
+  }
+  df <- gather(df, column, FL, 1:20)
+  
+  #remove no compound wells in the final plate 32
+  sc <- seq(4,22, 2)
+  sr <- c("B", "D", "F", "H", "J", "L", "N", "P")
+  df <- subset(df, !(plate == 32 & column %in% sc))
+  df <- subset(df, !(plate == 32 & row %in% sr ))
+  
+  #### Keep all rows after normalization 
+  #df <- subset(df, !(row %in% c("A", "B", "C") ))
+
+  #make well number
+  df$well <- paste0(df$row, df$column)
+  
+  #add type to plates
+  df$type <- as.numeric(type == "promoter")
+  
+  #add full name, combine plate number to well
+  df$position <- paste(df$plate, df$well, sep = "_")
+  
+  #remove column and row 
+  df <- subset(df, select = c(plate, type, position, FL))
+  return(df)
+}
+
+pro.df2 <- combinePlates(proscaled, "promoter")
+tc <- dim(pro.df2)[1]
+#head(pro.df2)
+#tail(pro.df2)
+```
 
 There are total 10000 compounds included in the statistical analysis. Compounds from row A-C are not included in the analysis due to systmatic error. These excluded wells should be checked manually to pick potential hits.
 
 #### Investigate statistics of the dataset and visualize distribution
+
+``` r
+htsPlot <- function(df, type){
+  print(summary(df$FL))
+  ave <- mean(df$FL)
+  sd <- sd(df$FL)
+  sd2 <- 2*sd
+  sd3 <- 3*sd
+  
+  if(type == "promoter"){
+    sg <- 1
+  } else{
+    sg <- -1
+  }
+  g <- ggplot(data = df, aes(FL) )+
+  geom_histogram(binwidth = 0.01)+
+  ggtitle(paste0(type, " : HTS result distribution for ChemBridge 10k"))+
+  scale_x_continuous(name="Normalized fluorescence")+
+  geom_vline(xintercept = ave, col = "black")+
+  geom_vline(xintercept = ave - sg* sd, col = "red")+
+  geom_vline(xintercept = ave - sg* sd2, col = "red")+
+  geom_vline(xintercept = ave - sg* sd3, col = "blue")
+  print(g)
+
+}
+
+htsPlot(pro.df2, "promoter")
+```
 
     ##    Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
     ## -0.0498  0.9646  1.0020  0.9998  1.0370  1.4020
@@ -179,6 +492,36 @@ The black vertical line indicates average. The red vertical lines indicate 1 sig
 
 #### Summarize the hits
 
+``` r
+htsSummary <- function(df, type){
+  ave <- mean(df$FL)
+  sd <- sd(df$FL)
+  sd2 <- 2*sd
+  sd3 <- 3*sd
+
+  if(type == "promoter"){
+    sg <- 1
+  } else{
+    sg <- -1
+  }  
+  
+  sigma2 <- subset(df, (df$FL > (ave + sd2)) | df$FL < (ave - sd2) )
+  sigma3 <- subset(df, (df$FL > (ave + sd3)) | (df$FL < (ave - sd3)))
+  
+  st <- c("total", "sigma2", "sigma3")
+  count <- c(dim(df)[1], dim(sigma2)[1], dim(sigma3)[1])
+  
+  table <- data.frame(st, count)
+  table$type <- type
+  table$percentage <- round(table$count/dim(df)[1], digits = 4)
+  
+  print(table)
+  return(list(sigma2, sigma3))
+}
+
+sspro <- htsSummary(pro.df2, "promoter")
+```
+
     ##       st count     type percentage
     ## 1  total 10000 promoter     1.0000
     ## 2 sigma2   492 promoter     0.0492
@@ -186,9 +529,22 @@ The black vertical line indicates average. The red vertical lines indicate 1 sig
 
 This table summarizes the hits at 2 sigma and 3 sigma away from the average. I included both directions because there could be strong potential promoters and inhibitors captured in both assay.
 
+``` r
+# Print 3 sigma hits in rank order
+pss3 <- sspro[[2]]
+pss3 <- pss3[with(pss3, order(FL)),]
+row.names(pss3) <- c(1: dim(pss3)[1])
+# pss3
+```
+
 #### 3.2 Inhibitor HTS. Follow the same steps to analyze the inhibitor data set
 
 #### Check standard curve for each plate
+
+``` r
+inh.standards <- standardTable(inhplates, "inhibitor")
+inh.standards
+```
 
     ##    plate type    150    200    300    400    500    600    800       0
     ## 1      1    0  91692 168700 364524 505674 551308 670992 708018 1279536
@@ -224,17 +580,45 @@ This table summarizes the hits at 2 sigma and 3 sigma away from the average. I i
     ## 31    31    0 117219 178030 379782 514282 575728 655709 695906 1275808
     ## 32    32    0 109687 187516 372038 502248 551614 642072 686566 1219149
 
+``` r
+inh.standards <- gather(inh.standards, NaCl, FL, 3:10)
+#head(inh.standards)
+```
+
 #### Visualize salt conditions in standard curve
+
+``` r
+ggplot(data = inh.standards, aes(x= plate, y=FL))+
+  geom_point()+
+  facet_grid(.~ NaCl)+
+  ggtitle("Inhibitor HTS: standard curve conditions for all plates")
+```
 
 ![](Figs/unnamed-chunk-18-1.png)
 
 ### Visualize standard curves for all plates
+
+``` r
+ggplot(data = subset(inh.standards, NaCl != 0), aes(x = NaCl, y = FL, group = 1))+
+  geom_point()+
+  geom_line()+
+  facet_wrap(~plate)+
+  ggtitle("Inhibitor HTS: Standard curves for all plates")+
+  xlab( "NaCl, mM")
+```
 
 ![](Figs/unnamed-chunk-19-1.png)
 
 Standard curves look consistent for all plates.
 
 #### Analyze the statistics for controls
+
+``` r
+#remove row A-C in assay condition in control table
+inh.controls1 <- statTable(inhplates, "inhibitor", row = c(4:16))
+
+inh.controls1
+```
 
     ##     plate type aveAssay ave150 ave800 sdAssay sd150 sd800 cvAssay  cv150  cv800      z normAssay
     ## X1      1    0   327493  65811 752306   27244  3602 29453  0.0832 0.0547 0.0392 0.5996    0.3812
@@ -274,13 +658,32 @@ Control 150mM NaCl condition has big variations in some plates.
 
 #### Visualize control conditions for all plates
 
+``` r
+controlPlot(inhplates, row = 1:16)
+```
+
 ![](Figs/unnamed-chunk-21-1.png)
+
+``` r
+normZplot(inh.controls1)
+```
 
 ![](Figs/unnamed-chunk-22-1.png)
 
 Plates 9-12 has relatively high signal for 150mM NaCl.
 
 #### Re-normalize plate 9-12 using average ave150
+
+``` r
+inh.controls2 <- statTable(inhplates, "inhibitor", row = c(4:16))
+inh.controls2$ave150c <- inh.controls2$ave150
+inh.controls2[9:12,]$ave150c <- round(mean(inh.controls2[-c(9:12),]$ave150))
+
+inh.controls2$normAssay <- round((inh.controls2$aveAssay - inh.controls2$ave150c)/
+                    (inh.controls2$ave800 - inh.controls2$ave150c),digits =4)
+
+inh.controls2
+```
 
     ##     plate type aveAssay ave150 ave800 sdAssay sd150 sd800 cvAssay  cv150  cv800      z normAssay ave150c
     ## X1      1    0   327493  65811 752306   27244  3602 29453  0.0832 0.0547 0.0392 0.5996    0.3812   65811
@@ -316,37 +719,173 @@ Plates 9-12 has relatively high signal for 150mM NaCl.
     ## X31    31    0   347372  79829 764697   15164 10461 44714  0.0437 0.1310 0.0585 0.5696    0.3906   79829
     ## X32    32    0   332434  80866 772932   28485 11112 68210  0.0857 0.1374 0.0882 0.3415    0.3635   80866
 
+``` r
+#names(inh.controls2)
+```
+
 #### Scale data based on ave150c and ave800
+
+``` r
+inhscaled <- scaleData(inhplates, inh.controls2, "ave150c", "ave800")
+
+#inhscaled[[1]]
+```
 
 #### Divide each assay well data point by the average of the same well in all plates
 
+``` r
+inhscaled <- normPlate(inhscaled)
+```
+
 #### Combine all plate data into one piece
+
+``` r
+inh.df2 <- combinePlates(inhscaled, "inhibitor")
+
+tci <- dim(inh.df2)[1]
+#head(inh.df2)
+```
 
 There are total 10000 compounds included in the statistical analysis. Compounds from row A-C are not included in the analysis due to systmatic error. These excluded wells should be checked manually to pick potential hits.
 
 #### Investigate statistics of the dataset and visualize distribution
+
+``` r
+htsPlot(inh.df2, "inhibitor")
+```
 
     ##    Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
     ##  0.3300  0.9460  0.9929  1.0000  1.0480  2.3070
 
 ![](Figs/unnamed-chunk-27-1.png)
 
+``` r
+ssinh <- htsSummary(inh.df2, "inhibitor")
+```
+
     ##       st count      type percentage
     ## 1  total 10000 inhibitor     1.0000
     ## 2 sigma2   438 inhibitor     0.0438
     ## 3 sigma3   132 inhibitor     0.0132
 
+``` r
+#Print 3 sigma hits in rank order
+iss3 <- ssinh[[2]]
+iss3 <- iss3[with(iss3, order(-FL)),]
+row.names(iss3) <- c(1:dim(iss3)[1])
+#iss3 
+```
+
 #### Find intersection of two HTS
+
+``` r
+# helper function to define promoter or inhibitor
+effector <- function(val, ave){
+  if(val < ave){
+    return("promoter")
+  } else{
+    return("inhibitor")
+  }
+}
+
+# get the mean of activity in promoter HTS
+pro.ave <- mean(pro.df2$FL)
+
+# find the intersection of two HTS
+intersectHits <- function(pross, inhss, sigma, average) {
+    # pross and inhss have 2 elements
+    # the first one is 2 sigma hits, second is 3 sigma hits
+    pss <- pross[[sigma-1]]
+    iss <- inhss[[sigma-1]]
+    interlist <- merge(pss, iss, by = "position")[,c(1,4,7)]
+    colnames(interlist) <- c("position", "pro.hts.fl", "inh.hts.fl")
+    
+    # assign type to each compound
+    interlist$type <- sapply(interlist$pro.hts.fl, effector, ave = average)
+    
+    # rank compounds
+    interlist <- interlist[with(interlist, order(type, pro.hts.fl)),]
+    row.names(interlist) <- c(1:dim(interlist)[1])
+    return(interlist)
+}
+```
+
+``` r
+commons3 <- intersectHits(sspro, ssinh, 3, pro.ave)
+c3 <- dim(commons3)[1]
+
+commons2 <- intersectHits(sspro, ssinh, 2, pro.ave)
+c2 <- dim(commons2)[1]
+```
 
 There are 127 common compounds shown as hits in both assays with 2 sigma away from mean. There are 27 common compounds shown as hits in both assays with 3 sigma away from mean.
 
 #### Read in the ChemBridge 10k database and clean it up
+
+``` r
+cb10k <- read.csv("ChemBridge10k.csv")[,1:3]
+
+# add a simple plate number for 96-well plate
+cb10k$p96 <- sapply(cb10k$Barcode, function(x) 
+                {return(as.integer(substring(x, 5,9))-61125)})
+
+# add a simple corresponding 384-well plate number
+cb10k$p384 <- ceiling(cb10k$p96/4)
+
+# each 384 well plate contains 4 96-well plates
+# track the sub number of 96-well plate in 384 plate
+cb10k$subp96 <- cb10k$p96%%4
+
+# sperate the row and column for well location in 384 well plate
+cb10k$r96 <- substr(cb10k$Well.Location, 1,1)
+
+cb10k$c96 <- as.integer(substr(cb10k$Well.Location, 2,3))
+
+convertWell <- function(row, col, subplate){
+  rr <- match(row, LETTERS)
+  if (subplate ==1){
+    nr <- LETTERS[rr*2-1]
+    nc <- col*2-1
+  } else if(subplate ==2){
+    nr <- LETTERS[rr*2-1]
+    nc <- col*2
+  } else if (subplate ==3){
+    
+    nr <- LETTERS[rr*2]
+    nc <- col*2 -1
+  } else{
+    nr <- LETTERS[rr*2]
+    nc <- col*2
+  }
+  return(paste0(nr,nc))
+}
+
+cb10k$well384 <- mapply(convertWell, cb10k$r96, cb10k$c96, cb10k$subp96)
+cb10k$position384 <- paste(cb10k$p384, cb10k$well384, sep = "_")
+
+write.csv(cb10k, file = "cb10k.csv")
+
+# select necessary columns
+cb10k <- subset(cb10k, select = c(Barcode, Batch, Well.Location, position384))
+
+#head(cb10k)
+dim(cb10k)
+```
 
     ## [1] 10000     4
 
 #### Locate hits in the original database
 
 ###### Intersection of 3 sigma compounds. Rank the list by ascending order of fluorescence in promoter HTS.
+
+``` r
+hits3 <- merge(commons3, cb10k, by.x = "position", by.y = "position384")
+write.csv(hits3, file = "hits3sigma_2.csv")
+
+hits3 <- hits3[with(hits3, order(type, pro.hts.fl)),][1:6]
+row.names(hits3) <- c(1:dim(hits3)[1])
+hits3
+```
 
     ##    position pro.hts.fl inh.hts.fl      type       Barcode   Batch
     ## 1     7_P17     1.1961     1.4813 inhibitor ABCB61152DP01 7802793
@@ -377,15 +916,50 @@ There are 127 common compounds shown as hits in both assays with 2 sigma away fr
     ## 26    23_E7     0.8074     0.6057  promoter ABCB61214DP01 7911732
     ## 27    4_L10     0.8075     0.6043  promoter ABCB61141DP01 7733368
 
+``` r
+s3p <- nrow(subset(hits3, type == "promoter"))
+s3i <- nrow(subset(hits3, type == "inhibitor"))
+```
+
 There are 22 promoters and 5 inhibitors in 3 sigma hits.
 
 ##### Intersection of 2 sigma compounds. Rank the list by ascending order of fluorescence in promoter HTS.
+
+``` r
+hits2 <- merge(commons2, cb10k, by.x = "position", by.y = "position384")
+write.csv(hits2, file = "hits2sigma_2.csv")
+
+hits2 <- hits2[with(hits2, order(type, pro.hts.fl)),][1:6]
+row.names(hits2) <- c(1:dim(hits2)[1])
+#hits2
+
+s2p <- nrow(subset(hits2, type == "promoter"))
+s2i <- nrow(subset(hits2, type == "inhibitor"))
+```
 
 There are 79 promoters and 48 inhibitors in 2 sigma hits.
 
 #### Compare 3 sigma hits form the intersection to their rank in each assay
 
+``` r
+interOriginal <- function(interlist, originlist){
+  mdf <- merge(interlist, originlist, by = "position", all.y = TRUE)
+  mdf <- subset(mdf, select = c(position, plate, type.x, FL, inh.hts.fl))
+  colnames(mdf)[3] <- "type"
+  colnames(mdf)[4] <- "single.assay"
+  colnames(mdf)[5] <- "second.assay"
+  mdf <- mdf[with(mdf, order(single.assay)),]
+  row.names(mdf) <- c(1:dim(mdf)[1])
+  return(mdf)
+} 
+```
+
 Compare intersection hits to **promoter** HTS 3 sigma hits
+
+``` r
+iop <- interOriginal(commons3, sspro[[2]])
+replace(iop, is.na(iop), "-")
+```
 
     ##    position plate      type single.assay second.assay
     ## 1    23_C15    23         -      -0.0498            -
@@ -446,6 +1020,11 @@ Compare intersection hits to **promoter** HTS 3 sigma hits
     ## 56    8_J14     8 inhibitor       1.4017       1.4571
 
 Compare intersection hits to **inhibitor** HTS 3 sigma hits
+
+``` r
+ioi <- interOriginal(commons3, ssinh[[2]])
+replace(ioi, is.na(ioi), "-")
+```
 
     ##     position plate      type single.assay second.assay
     ## 1      6_J16     6  promoter       0.3300         0.33
